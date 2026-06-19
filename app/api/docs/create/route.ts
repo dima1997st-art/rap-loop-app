@@ -2,6 +2,14 @@ import { getToken } from "next-auth/jwt";
 import { google } from "googleapis";
 import { NextRequest, NextResponse } from "next/server";
 
+function normalizeDocText(text: string) {
+  return text
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\u000b\u000c\u0085\u2028\u2029]/g, "\n")
+    .replace(/[\u0000-\u0008\u000e-\u001f\u007f]/g, "")
+    .replace(/[ \t]+\n/g, "\n");
+}
+
 export async function POST(req: NextRequest) {
   try {
     const token = await getToken({
@@ -14,6 +22,7 @@ export async function POST(req: NextRequest) {
     }
 
     const { title, text } = await req.json();
+    const normalizedText = typeof text === "string" ? normalizeDocText(text) : "";
 
     const auth = new google.auth.OAuth2();
     auth.setCredentials({
@@ -40,7 +49,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (text && text.trim()) {
+    if (normalizedText.trim()) {
       await docs.documents.batchUpdate({
         documentId,
         requestBody: {
@@ -50,7 +59,7 @@ export async function POST(req: NextRequest) {
                 location: {
                   index: 1,
                 },
-                text,
+                text: normalizedText,
               },
             },
           ],

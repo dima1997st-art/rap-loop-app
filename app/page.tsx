@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { signIn, signOut, useSession } from "next-auth/react";
 import WaveSurfer from "wavesurfer.js";
 import RegionsPlugin from "wavesurfer.js/dist/plugins/regions.esm.js";
-import { guess } from "web-audio-beat-detector";
+import { analyze, guess } from "web-audio-beat-detector";
 import {
   type DemoTake,
   type RecordMode,
@@ -17,6 +17,20 @@ type ThemeMode = "light" | "dark";
 type LyricsFont = "system" | "serif" | "mono";
 type GridDivision = "1/4" | "1/8" | "1/16";
 type BeatGridLine = { time: number; left: number; isBar: boolean; isBeat: boolean; label: string };
+
+const LOCAL_LYRICS_KEY = "rap-loop-lyrics";
+const LOCAL_PROJECT_NAME_KEY = "rap-loop-project-name";
+const LOCAL_DOC_ID_KEY = "rap-loop-current-doc-id";
+const LOCAL_DOC_URL_KEY = "rap-loop-current-doc-url";
+const LOCAL_DOC_AUTO_PAUSED_KEY = "rap-loop-doc-auto-paused";
+
+function normalizeEditorText(text: string) {
+  return text
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\u000b\u000c\u0085\u2028\u2029]/g, "\n")
+    .replace(/[\u0000-\u0008\u000e-\u001f\u007f]/g, "")
+    .replace(/[ \t]+\n/g, "\n");
+}
 
 const BEATS_PER_BAR = 4;
 const MIN_GRID_LABEL_GAP_PX = 72;
@@ -59,14 +73,16 @@ function snapTimeToBeatGrid(
   time: number,
   bpmValue: number | null,
   maxTime: number,
-  division: GridDivision
+  division: GridDivision,
+  offsetMs = 0
 ) {
   if (!bpmValue || bpmValue <= 0) return Math.min(Math.max(time, 0), maxTime);
 
   const gridSeconds = 60 / bpmValue / gridDivisionStepsPerBeat[division];
-  const snapped = Math.round(time / gridSeconds) * gridSeconds;
+  const offsetSeconds = offsetMs / 1000;
+  const snapped = Math.round((time - offsetSeconds) / gridSeconds) * gridSeconds + offsetSeconds;
 
-  return Math.min(Math.max(snapped, 0), maxTime);
+  return Number(Math.min(Math.max(snapped, 0), maxTime).toFixed(6));
 }
 
 export default function Home() {
@@ -87,7 +103,9 @@ export default function Home() {
   const selectionRef = useRef({ start: 0, end: 0 });
   const bpmRef = useRef<number | null>(null);
   const gridDivisionRef = useRef<GridDivision>("1/4");
+  const gridOffsetMsRef = useRef(0);
   const gridSnapEnabledRef = useRef(true);
+  const creatingDocRef = useRef(false);
 
   const [theme, setTheme] = useState<ThemeMode>("light");
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
@@ -97,6 +115,7 @@ export default function Home() {
   const [docs, setDocs] = useState<GoogleDoc[]>([]);
   const [currentDocId, setCurrentDocId] = useState("");
   const [docsStatus, setDocsStatus] = useState("");
+  const [docsAutoPaused, setDocsAutoPaused] = useState(false);
   const [playMode, setPlayMode] = useState<"full" | "loop">("full");
   const [loopStart, setLoopStart] = useState(0);
   const [loopEnd, setLoopEnd] = useState(10);
@@ -115,6 +134,7 @@ export default function Home() {
   const [lyricsFont, setLyricsFont] = useState<LyricsFont>("system");
   const [lyricsFontSize, setLyricsFontSize] = useState(28);
   const [gridDivision, setGridDivision] = useState<GridDivision>("1/4");
+  const [gridOffsetMs, setGridOffsetMs] = useState(0);
   const [gridSnapEnabled, setGridSnapEnabled] = useState(true);
 
   const [rhymeWord, setRhymeWord] = useState("");
@@ -155,8 +175,36 @@ export default function Home() {
     const storedTheme = localStorage.getItem("writer-theme");
     if (storedTheme === "dark" || storedTheme === "light") setTheme(storedTheme);
 
-    setLyrics(localStorage.getItem("rap-loop-lyrics") || "");
-    setProjectName(localStorage.getItem("rap-loop-project-name") || "Untitled Project");
+    const storedLyrics = normalizeEditorText(localStorage.getItem(LOCAL_LYRICS_KEY) || "");
+    const storedProjectName = localStorage.getItem(LOCAL_PROJECT_NAME_KEY) || "Untitled Project";
+    const storedDocId = localStorage.getItem(LOCAL_DOC_ID_KEY) || "";
+    const storedDocUrl = localStorage.getItem(LOCAL_DOC_URL_KEY) || "";
+    const storedAutoPaused = localStorage.getItem(LOCAL_DOC_AUTO_PAUSED_KEY) === "true";
+
+    setLyrics(storedLyrics);
+    setProjectName(storedProjectName);
+    setCurrentDocId(storedDocId);
+    setDocsAutoPaused(storedAutoPaused);
+
+    if (storedDocId) {
+      lastSyncedRef.current = JSON.stringify({
+        documentId: storedDocId,
+        title: storedProjectName,
+        text: storedLyrics,
+      });
+      setDocsStatus("Reconnected to Google Docs");
+
+      if (storedDocUrl) {
+        setDocs([
+          {
+            id: storedDocId,
+            name: storedProjectName,
+            webViewLink: storedDocUrl,
+          },
+        ]);
+      }
+    }
+
     const storedLyricsFont = localStorage.getItem("writer-lyrics-font");
     const storedLyricsFontSize = Number(localStorage.getItem("writer-lyrics-font-size"));
 
@@ -191,7 +239,12 @@ export default function Home() {
   useEffect(() => {
     if (!currentDocId) return;
 
-    const signature = JSON.stringify({ documentId: currentDocId, title: projectName, text: lyrics });
+    const normalizedLyrics = normalizeEditorText(lyrics);
+    const signature = JSON.stringify({
+      documentId: currentDocId,
+      title: projectName,
+      text: normalizedLyrics,
+    });
     if (signature === lastSyncedRef.current) return;
 
     const timer = setTimeout(async () => {
@@ -200,7 +253,7 @@ export default function Home() {
         const res = await fetch("/api/docs/update", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ documentId: currentDocId, text: lyrics, title: projectName }),
+          body: JSON.stringify({ documentId: currentDocId, text: normalizedLyrics, title: projectName }),
         });
 
         const data = await res.json();
@@ -211,6 +264,9 @@ export default function Home() {
         }
 
         lastSyncedRef.current = signature;
+        localStorage.setItem(LOCAL_DOC_ID_KEY, currentDocId);
+        localStorage.setItem(LOCAL_PROJECT_NAME_KEY, projectName);
+        localStorage.setItem(LOCAL_LYRICS_KEY, normalizedLyrics);
         setDocsStatus("Synced to Google Docs");
       } catch {
         setDocsStatus("Sync failed");
@@ -219,6 +275,52 @@ export default function Home() {
 
     return () => clearTimeout(timer);
   }, [lyrics, projectName, currentDocId]);
+
+  useEffect(() => {
+    if (!session || currentDocId || docsAutoPaused || creatingDocRef.current) return;
+
+    const normalizedLyrics = normalizeEditorText(lyrics);
+    const hasDraftContent =
+      normalizedLyrics.trim() !== "" || projectName.trim() !== "Untitled Project";
+    if (!hasDraftContent) return;
+
+    const timer = window.setTimeout(async () => {
+      if (currentDocId || creatingDocRef.current) return;
+
+      creatingDocRef.current = true;
+      try {
+        setDocsStatus("Creating Google Doc...");
+
+        const res = await fetch("/api/docs/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: projectName, text: normalizedLyrics }),
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          setDocsStatus(data?.error || "Could not create Google Doc");
+          return;
+        }
+
+        persistGoogleDocLink(data.documentId, projectName, normalizedLyrics, data.url);
+        setDocs((prev) => [
+          {
+            id: data.documentId,
+            name: data.title || projectName || "Untitled Project",
+            webViewLink: data.url,
+          },
+          ...prev.filter((doc) => doc.id !== data.documentId),
+        ]);
+        setDocsStatus("Google Doc created · Live sync connected");
+      } finally {
+        creatingDocRef.current = false;
+      }
+    }, 1200);
+
+    return () => window.clearTimeout(timer);
+  }, [currentDocId, docsAutoPaused, lyrics, projectName, session]);
 
   useEffect(() => {
     playModeRef.current = playMode;
@@ -241,8 +343,41 @@ export default function Home() {
   }, [gridDivision]);
 
   useEffect(() => {
+    gridOffsetMsRef.current = gridOffsetMs;
+  }, [gridOffsetMs]);
+
+  useEffect(() => {
     gridSnapEnabledRef.current = gridSnapEnabled;
   }, [gridSnapEnabled]);
+
+  useEffect(() => {
+    const region = regionRef.current;
+    const ws = wsRef.current;
+    if (!region || !ws || !gridSnapEnabled || !bpm || typeof region.setOptions !== "function") {
+      return;
+    }
+
+    const durationValue = ws.getDuration();
+    const gridSeconds = 60 / bpm / gridDivisionStepsPerBeat[gridDivision];
+    const snappedStart = snapTimeToBeatGrid(
+      region.start,
+      bpm,
+      durationValue,
+      gridDivision,
+      gridOffsetMs
+    );
+    const snappedEnd = Math.max(
+      snappedStart + gridSeconds,
+      snapTimeToBeatGrid(region.end, bpm, durationValue, gridDivision, gridOffsetMs)
+    );
+
+    region.setOptions({
+      start: snappedStart,
+      end: Math.min(Number(snappedEnd.toFixed(6)), durationValue),
+    });
+    setLoopStart(snappedStart);
+    setLoopEnd(Math.min(Number(snappedEnd.toFixed(6)), durationValue));
+  }, [bpm, gridDivision, gridOffsetMs, gridSnapEnabled]);
 
   useEffect(() => {
     if (!waveformRef.current || !audioUrl) return;
@@ -289,6 +424,7 @@ export default function Home() {
     regions.on("region-updated", (region: any) => {
       const activeBpm = bpmRef.current;
       const activeGridDivision = gridDivisionRef.current;
+      const activeGridOffsetMs = gridOffsetMsRef.current;
       const shouldSnapToGrid = gridSnapEnabledRef.current;
 
       if (shouldSnapToGrid && activeBpm && typeof region.setOptions === "function") {
@@ -297,11 +433,18 @@ export default function Home() {
           region.start,
           activeBpm,
           ws.getDuration(),
-          activeGridDivision
+          activeGridDivision,
+          activeGridOffsetMs
         );
         const snappedEnd = Math.max(
           snappedStart + gridSeconds,
-          snapTimeToBeatGrid(region.end, activeBpm, ws.getDuration(), activeGridDivision)
+          snapTimeToBeatGrid(
+            region.end,
+            activeBpm,
+            ws.getDuration(),
+            activeGridDivision,
+            activeGridOffsetMs
+          )
         );
 
         if (
@@ -362,7 +505,13 @@ export default function Home() {
         e.preventDefault();
         saveLocal();
         setSaved("Saved");
-        setDocsStatus(currentDocId ? "Saved locally · Google sync queued" : "Saved locally");
+        setDocsStatus(
+          session
+            ? currentDocId
+              ? "Browser draft saved · Google sync queued"
+              : "Browser draft saved · not saved to Docs"
+            : "Saved locally"
+        );
         return;
       }
 
@@ -400,12 +549,32 @@ export default function Home() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [commandOpen, currentDocId, lyrics, projectName]);
+  }, [commandOpen, currentDocId, lyrics, projectName, session]);
 
   function saveLocal() {
-    localStorage.setItem("rap-loop-lyrics", lyrics);
-    localStorage.setItem("rap-loop-project-name", projectName);
+    localStorage.setItem(LOCAL_LYRICS_KEY, normalizeEditorText(lyrics));
+    localStorage.setItem(LOCAL_PROJECT_NAME_KEY, projectName);
     setSaved("Saved");
+  }
+
+  function persistGoogleDocLink(documentId: string, title: string, text: string, url = "") {
+    setCurrentDocId(documentId);
+    setDocsAutoPaused(false);
+    localStorage.setItem(LOCAL_DOC_ID_KEY, documentId);
+    localStorage.setItem(LOCAL_DOC_AUTO_PAUSED_KEY, "false");
+    if (url) localStorage.setItem(LOCAL_DOC_URL_KEY, url);
+    localStorage.setItem(LOCAL_PROJECT_NAME_KEY, title);
+    localStorage.setItem(LOCAL_LYRICS_KEY, text);
+    lastSyncedRef.current = JSON.stringify({ documentId, title, text });
+  }
+
+  function clearGoogleDocLink({ pauseAutoCreate = false } = {}) {
+    setCurrentDocId("");
+    setDocsAutoPaused(pauseAutoCreate);
+    lastSyncedRef.current = "";
+    localStorage.removeItem(LOCAL_DOC_ID_KEY);
+    localStorage.removeItem(LOCAL_DOC_URL_KEY);
+    localStorage.setItem(LOCAL_DOC_AUTO_PAUSED_KEY, String(pauseAutoCreate));
   }
 
   function formatTime(seconds: number) {
@@ -629,25 +798,24 @@ export default function Home() {
       return setDocsStatus("Could not open document");
     }
 
-    setCurrentDocId(documentId);
-    setProjectName(data.title || "Untitled Project");
-    setLyrics(data.text || "");
-    lastSyncedRef.current = JSON.stringify({
-      documentId,
-      title: data.title || "Untitled Project",
-      text: data.text || "",
-    });
+    const nextTitle = data.title || "Untitled Project";
+    const nextText = normalizeEditorText(data.text || "");
+
+    setProjectName(nextTitle);
+    setLyrics(nextText);
+    persistGoogleDocLink(documentId, nextTitle, nextText);
 
     setDocsStatus("Opened in app · Live sync connected");
   }
 
-  async function createGoogleDoc() {
+  async function createGoogleDoc(title = projectName, text = lyrics) {
     setDocsStatus("Creating Google Doc...");
+    const normalizedText = normalizeEditorText(text);
 
     const res = await fetch("/api/docs/create", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title: projectName, text: lyrics }),
+      body: JSON.stringify({ title, text: normalizedText }),
     });
 
     const data = await res.json();
@@ -657,15 +825,15 @@ export default function Home() {
       return setDocsStatus("Could not create Google Doc");
     }
 
-    setCurrentDocId(data.documentId);
-    lastSyncedRef.current = JSON.stringify({
-      documentId: data.documentId,
-      title: projectName,
-      text: lyrics,
-    });
+    persistGoogleDocLink(data.documentId, title, normalizedText, data.url);
 
     setDocsStatus("Google Doc created · Live sync connected");
     await loadDocs();
+  }
+
+  function disconnectGoogleDoc() {
+    clearGoogleDocLink({ pauseAutoCreate: true });
+    setDocsStatus("Google Docs disconnected. This draft is not saved to Docs.");
   }
 
   async function deleteGoogleDoc(fileId: string) {
@@ -688,8 +856,7 @@ export default function Home() {
     }
 
     if (currentDocId === fileId) {
-      setCurrentDocId("");
-      lastSyncedRef.current = "";
+      clearGoogleDocLink({ pauseAutoCreate: true });
       setDocsStatus("Deleted linked doc · Project is local now");
     } else {
       setDocsStatus("Google Doc moved to trash");
@@ -707,9 +874,10 @@ export default function Home() {
       const arrayBuffer = await file.arrayBuffer();
       const audioContext = new AudioContext();
       const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-      const result = await guess(audioBuffer);
+      const [tempo, result] = await Promise.all([analyze(audioBuffer), guess(audioBuffer)]);
 
-      setBpm(Math.round(result.bpm));
+      setBpm(Number(tempo.toFixed(3)));
+      setGridOffsetMs(Math.min(500, Math.max(-500, Math.round((result.offset || 0) * 1000))));
       setBpmStatus("Detected");
 
       await audioContext.close();
@@ -737,6 +905,7 @@ export default function Home() {
     setDecodedAudioBuffer(null);
     setLoopStart(0);
     setLoopEnd(10);
+    setGridOffsetMs(0);
     setPlayMode("full");
     setIsPlaying(false);
 
@@ -793,7 +962,7 @@ Beat: ${fileName}
 BPM: ${bpm || "Unknown"}
 
 Loop:
-${loopStart.toFixed(2)}s → ${loopEnd.toFixed(2)}s
+${loopStart.toFixed(3)}s → ${loopEnd.toFixed(3)}s
 
 ${lyrics}`;
 
@@ -808,14 +977,7 @@ ${lyrics}`;
     URL.revokeObjectURL(url);
   }
 
-  function newProject() {
-    const hasContent = lyrics.trim() !== "" || projectName.trim() !== "Untitled Project";
-
-    if (hasContent) {
-      const shouldDownload = window.confirm("Download current project before starting a new one?");
-      if (shouldDownload) downloadTxt();
-    }
-
+  function resetProjectState() {
     pause();
 
     setProjectName("Untitled Project");
@@ -828,25 +990,49 @@ ${lyrics}`;
     setDuration(0);
     setLoopStart(0);
     setLoopEnd(10);
+    setGridOffsetMs(0);
     setPlayMode("full");
-    setCurrentDocId("");
+    clearGoogleDocLink();
     lastPlaybackStartRef.current = 0;
-    lastSyncedRef.current = "";
 
     wsRef.current?.destroy();
     regionRef.current = null;
 
-    localStorage.removeItem("rap-loop-lyrics");
-    localStorage.removeItem("rap-loop-project-name");
+    localStorage.removeItem(LOCAL_LYRICS_KEY);
+    localStorage.removeItem(LOCAL_PROJECT_NAME_KEY);
+  }
 
-    setDocsStatus("New local project");
+  async function newProject() {
+    const hasContent = lyrics.trim() !== "" || projectName.trim() !== "Untitled Project";
+
+    if (!session && hasContent) {
+      const shouldDownload = window.confirm("Download current project before starting a new one?");
+      if (shouldDownload) downloadTxt();
+    }
+
+    if (session && hasContent && !currentDocId) {
+      const shouldContinue = window.confirm(
+        "Start a new Google Doc? This unsaved draft will be replaced."
+      );
+      if (!shouldContinue) return;
+    }
+
+    resetProjectState();
+
+    if (session) {
+      await createGoogleDoc("Untitled Project", "");
+      setDocsStatus("New Google Doc ready");
+      return;
+    }
+
+    setDocsStatus("New local guest draft");
   }
 
   const commandItems = [
     { label: "Play / Pause", shortcut: "Space", action: togglePlayPause },
     { label: "Toggle Loop", shortcut: "L", action: toggleLoopMode },
     { label: "Restart From Start Point", shortcut: "R", action: restartPlayback },
-    { label: "Save Local", shortcut: "⌘S", action: saveLocal },
+    { label: session ? "Save Browser Draft" : "Save Local", shortcut: "⌘S", action: saveLocal },
     { label: "Focus Lyrics", shortcut: "Enter", action: () => textareaRef.current?.focus() },
     { label: "Download .txt", shortcut: "", action: downloadTxt },
   ];
@@ -895,15 +1081,19 @@ ${lyrics}`;
     const beatSeconds = 60 / bpm;
     const stepsPerBeat = gridDivisionStepsPerBeat[gridDivision];
     const gridSeconds = beatSeconds / stepsPerBeat;
-    const totalSteps = Math.floor(duration / gridSeconds);
+    const offsetSeconds = gridOffsetMs / 1000;
+    const firstStep = Math.ceil((0 - offsetSeconds) / gridSeconds);
+    const lastStep = Math.floor((duration - offsetSeconds) / gridSeconds);
+    const totalSteps = Math.max(0, lastStep - firstStep + 1);
 
     const labelEveryBeats = Math.max(1, Math.ceil(MIN_GRID_LABEL_GAP_PX / zoom));
 
-    return Array.from({ length: totalSteps + 1 }, (_, stepIndex) => {
-      const time = stepIndex * gridSeconds;
+    return Array.from({ length: totalSteps }, (_, index) => {
+      const stepIndex = firstStep + index;
+      const time = offsetSeconds + stepIndex * gridSeconds;
       const beatIndex = Math.floor(stepIndex / stepsPerBeat);
       const barIndex = Math.floor(beatIndex / BEATS_PER_BAR);
-      const beatInBar = beatIndex % BEATS_PER_BAR;
+      const beatInBar = ((beatIndex % BEATS_PER_BAR) + BEATS_PER_BAR) % BEATS_PER_BAR;
       const isBeat = stepIndex % stepsPerBeat === 0;
       const isBar = isBeat && beatInBar === 0;
       const showLabel = isBar || (isBeat && beatIndex % labelEveryBeats === 0);
@@ -916,7 +1106,7 @@ ${lyrics}`;
         label: showLabel ? (isBar ? `${barIndex + 1}` : `${barIndex + 1}.${beatInBar + 1}`) : "",
       };
     });
-  }, [bpm, duration, gridDivision, zoom]);
+  }, [bpm, duration, gridDivision, gridOffsetMs, zoom]);
 
   return (
     <main className={shellClass} onClick={() => setRhymeMenu({ open: false, x: 0, y: 0 })}>
@@ -1054,14 +1244,6 @@ ${lyrics}`;
                   {docsOpen ? "Hide Docs" : "Docs"}
                 </button>
 
-                <button
-                  onClick={createGoogleDoc}
-                  className={`rounded-full px-4 py-2.5 text-sm font-semibold transition hover:-translate-y-0.5 ${
-                    isDark ? "bg-white/10 hover:bg-white/15" : "bg-white hover:bg-zinc-50"
-                  }`}
-                >
-                  Link Doc
-                </button>
               </>
             )}
 
@@ -1089,7 +1271,7 @@ ${lyrics}`;
                 isDark ? "bg-white/10 hover:bg-white/15" : "bg-white hover:bg-zinc-50"
               }`}
             >
-              New
+              {session ? "New Doc" : "New"}
             </button>
 
             {session ? (
@@ -1127,13 +1309,29 @@ ${lyrics}`;
                   <div className="min-w-0">
                     <p className="truncate text-sm font-semibold">{session.user?.email}</p>
                     <p className="text-xs text-zinc-500">
-                      {currentDocId ? "Google Docs live sync active" : "Google connected"}
+                      {currentDocId
+                        ? "Google Docs live sync active"
+                        : docsAutoPaused
+                          ? "Google Docs disconnected for this draft"
+                          : "Google connected · starts syncing when you write"}
                       {docsStatus && ` · ${docsStatus}`}
                     </p>
                   </div>
-                  <span className="rounded-full bg-[#007aff]/10 px-3 py-1 text-xs font-semibold text-[#007aff]">
-                    {currentDocId ? "Synced" : "Local"}
-                  </span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-full bg-[#007aff]/10 px-3 py-1 text-xs font-semibold text-[#007aff]">
+                      {currentDocId ? "Synced" : docsAutoPaused ? "Disconnected" : "Ready"}
+                    </span>
+                    {currentDocId && (
+                      <button
+                        onClick={disconnectGoogleDoc}
+                        className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                          isDark ? "bg-white/10" : "bg-white"
+                        }`}
+                      >
+                        Disconnect
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 {docs.length > 0 && (
@@ -1147,9 +1345,14 @@ ${lyrics}`;
                         <div className="flex gap-2">
                           <button
                             onClick={() => openDocInApp(doc.id)}
-                            className="rounded-full bg-[#007aff] px-3 py-1.5 text-xs font-semibold text-white"
+                            disabled={currentDocId === doc.id}
+                            className={`rounded-full px-3 py-1.5 text-xs font-semibold ${
+                              currentDocId === doc.id
+                                ? "bg-[#007aff]/10 text-[#007aff]"
+                                : "bg-[#007aff] text-white"
+                            }`}
                           >
-                            Open in app
+                            {currentDocId === doc.id ? "Current" : "Open in app"}
                           </button>
                           <a
                             href={doc.webViewLink}
@@ -1337,7 +1540,7 @@ ${lyrics}`;
                               {take.mode === "loop" &&
                                 typeof take.loopStart === "number" &&
                                 typeof take.loopEnd === "number" &&
-                                ` · loop ${take.loopStart.toFixed(2)}s → ${take.loopEnd.toFixed(2)}s`}
+                                ` · loop ${take.loopStart.toFixed(3)}s → ${take.loopEnd.toFixed(3)}s`}
                             </p>
                           </div>
 
@@ -1429,8 +1632,8 @@ ${lyrics}`;
                 >
                   {bpm
                     ? gridSnapEnabled
-                      ? `Grid ${gridDivision} snap`
-                      : `Grid ${gridDivision}`
+                      ? `Grid ${gridDivision} snap · ${gridOffsetMs}ms`
+                      : `Grid ${gridDivision} · ${gridOffsetMs}ms`
                     : "Grid waits for BPM"}
                 </div>
 
@@ -1585,28 +1788,87 @@ ${lyrics}`;
                     : softClass
                 }`}
               >
-                Loop region · {loopStart.toFixed(2)}s → {loopEnd.toFixed(2)}s
+                Loop region · {loopStart.toFixed(3)}s → {loopEnd.toFixed(3)}s
               </div>
 
               <div className={`rounded-full px-5 py-3 text-sm ${softClass}`}>
-                BPM <span className="font-semibold">{bpm || "--"}</span>
+                <label className="flex items-center gap-2">
+                  <span>BPM</span>
+                  <input
+                    type="number"
+                    min="40"
+                    max="240"
+                    step="0.01"
+                    value={bpm ?? ""}
+                    onChange={(e) => {
+                      const nextBpm = Number(e.target.value);
+                      setBpm(Number.isFinite(nextBpm) && nextBpm > 0 ? nextBpm : null);
+                      setBpmStatus("Manual");
+                    }}
+                    placeholder="--"
+                    className={`w-20 rounded-full px-3 py-1 text-right font-mono text-xs font-semibold outline-none ${
+                      isDark ? "bg-[#15151a] text-white" : "bg-white text-[#1d1d1f]"
+                    }`}
+                  />
+                </label>
                 <span className="ml-2 text-xs">{bpmStatus}</span>
               </div>
             </div>
 
-            <div className={`mt-4 rounded-[1.25rem] px-5 py-3 ${softClass}`}>
-              <div className="mb-1.5 flex justify-between text-xs">
-                <span>Waveform zoom</span>
-                <span>{zoom}</span>
+            <div className="mt-4 grid gap-3 lg:grid-cols-2">
+              <div className={`rounded-[1.25rem] px-5 py-3 ${softClass}`}>
+                <div className="mb-1.5 flex justify-between text-xs">
+                  <span>Waveform zoom</span>
+                  <span>{zoom}</span>
+                </div>
+                <input
+                  type="range"
+                  min="20"
+                  max="250"
+                  value={zoom}
+                  onChange={(e) => setZoom(Number(e.target.value))}
+                  className="w-full accent-[#007aff] outline-none focus:outline-none focus-visible:outline-none"
+                />
               </div>
-              <input
-                type="range"
-                min="20"
-                max="250"
-                value={zoom}
-                onChange={(e) => setZoom(Number(e.target.value))}
-                className="w-full accent-[#007aff] outline-none focus:outline-none focus-visible:outline-none"
-              />
+
+              <div className={`rounded-[1.25rem] px-5 py-3 ${softClass}`}>
+                <div className="mb-1.5 flex items-center justify-between gap-3 text-xs">
+                  <span>Grid offset</span>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min="-500"
+                      max="500"
+                      step="1"
+                      value={gridOffsetMs}
+                      onChange={(e) =>
+                        setGridOffsetMs(Math.min(500, Math.max(-500, Number(e.target.value) || 0)))
+                      }
+                      className={`w-20 rounded-full px-3 py-1 text-right font-mono text-xs outline-none ${
+                        isDark ? "bg-[#15151a] text-white" : "bg-white text-[#1d1d1f]"
+                      }`}
+                    />
+                    <span>ms</span>
+                    <button
+                      onClick={() => setGridOffsetMs(0)}
+                      className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                        isDark ? "bg-[#15151a]" : "bg-white"
+                      }`}
+                    >
+                      Reset
+                    </button>
+                  </div>
+                </div>
+                <input
+                  type="range"
+                  min="-500"
+                  max="500"
+                  step="1"
+                  value={gridOffsetMs}
+                  onChange={(e) => setGridOffsetMs(Number(e.target.value))}
+                  className="w-full accent-[#007aff] outline-none focus:outline-none focus-visible:outline-none"
+                />
+              </div>
             </div>
           </div>
 
@@ -1692,7 +1954,7 @@ ${lyrics}`;
                         : "bg-white"
                   }`}
                 >
-                  Loop · {loopStart.toFixed(2)}s → {loopEnd.toFixed(2)}s · {formatTime(loopElapsed)}
+                  Loop · {loopStart.toFixed(3)}s → {loopEnd.toFixed(3)}s · {formatTime(loopElapsed)}
                 </div>
               </div>
             </div>
@@ -1751,7 +2013,7 @@ ${lyrics}`;
           <textarea
             ref={textareaRef}
             value={lyrics}
-            onChange={(e) => setLyrics(e.target.value)}
+            onChange={(e) => setLyrics(normalizeEditorText(e.target.value))}
             onContextMenu={handleTextareaRightClick}
             placeholder="Write your verse..."
             className={`h-[560px] w-full resize-none rounded-[1.5rem] border p-6 outline-none ${fieldClass}`}

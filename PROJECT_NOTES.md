@@ -1,5 +1,7 @@
 # Project Notes
 
+**Last updated: 2026-06-10**
+
 ## App idea
 AI-powered writing workstation for lyrics / rap / music writing.
 
