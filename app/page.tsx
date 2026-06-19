@@ -15,9 +15,8 @@ export default function Home() {
 
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [fileName, setFileName] = useState("No beat selected");
-  const [projectName, setProjectName] = useState("Untitled Rap");
+  const [projectName, setProjectName] = useState("Untitled Project");
   const [lyrics, setLyrics] = useState("");
-  const [isPlaying, setIsPlaying] = useState(false);
   const [playMode, setPlayMode] = useState<"full" | "loop">("full");
   const [loopStart, setLoopStart] = useState(0);
   const [loopEnd, setLoopEnd] = useState(10);
@@ -30,77 +29,28 @@ export default function Home() {
   const [quote, setQuote] = useState("");
 
   const quotes = [
-    "Abandon normal instruments",
-    "Accept advice",
-    "Accretion",
-    "A line has two sides",
-    "Allow an easement",
-    "Ask your body",
-    "Be dirty",
-    "Breathe more deeply",
-    "Bridges - build - burn",
-    "Courage!",
-    "Cut a vital connection",
-    "Decorate, decorate",
-    "Destroy the most important thing",
-    "Disconnect from desire",
-    "Distorting time",
-    "Do something boring",
-    "Don't break the silence",
-    "Emphasize differences",
-    "Emphasize repetitions",
-    "Emphasize the flaws",
-    "Faced with a choice, do both",
-    "Ghost echoes",
-    "Give way to your worst impulse",
-    "Go slowly all the way round the outside",
     "Honor thy error as a hidden intention",
-    "Humanize something free of error",
-    "Into the impossible",
-    "Is it finished?",
-    "Just carry on",
-    "Listen to the quiet voice",
-    "Look at the order in which you do things",
-    "Make a sudden, destructive, unpredictable action",
-    "Mute and continue",
-    "Only one element of each kind",
-    "Overtly resist change",
     "Repetition is a form of change",
-    "Reverse",
-    "Simple subtraction",
-    "Take a break",
-    "The tape is now the music",
-    "Think of the radio",
     "Trust in the you of now",
-    "Turn it upside down",
-    "Use an old idea",
     "Use fewer notes",
-    "Use filters",
-    "Water",
-    "What is the reality of the situation?",
-    "What mistakes did you make last time?",
-    "What wouldn't you do?",
+    "Listen to the quiet voice",
     "Work at a different speed",
-    "You are an engineer",
+    "What is the reality of the situation?",
     "You can only make one dot at a time",
-    "You don't have to be ashamed of using your own ideas",
+    "Turn it upside down",
+    "Into the impossible",
   ];
 
   useEffect(() => {
     setLyrics(localStorage.getItem("rap-loop-lyrics") || "");
     setProjectName(
-      localStorage.getItem("rap-loop-project-name") || "Untitled Rap"
+      localStorage.getItem("rap-loop-project-name") || "Untitled Project"
     );
-
-    const randomQuote =
-      quotes[Math.floor(Math.random() * quotes.length)];
-
-    setQuote(randomQuote);
+    setQuote(quotes[Math.floor(Math.random() * quotes.length)]);
   }, []);
 
   useEffect(() => {
     setSaved("Saving...");
-
     const timer = setTimeout(() => {
       localStorage.setItem("rap-loop-lyrics", lyrics);
       localStorage.setItem("rap-loop-project-name", projectName);
@@ -123,13 +73,12 @@ export default function Home() {
 
     wsRef.current?.destroy();
     regionRef.current = null;
-    setIsPlaying(false);
 
     const ws = WaveSurfer.create({
       container: waveformRef.current,
-      waveColor: "#4b5563",
-      progressColor: "#ffffff",
-      cursorColor: "#22c55e",
+      waveColor: "#d1d5db",
+      progressColor: "#111827",
+      cursorColor: "#007aff",
       height: 220,
       barWidth: 2,
       barGap: 2,
@@ -138,35 +87,29 @@ export default function Home() {
     });
 
     const regions = ws.registerPlugin(RegionsPlugin.create());
-
     wsRef.current = ws;
-
     ws.load(audioUrl);
 
     ws.on("decode", () => {
       const dur = ws.getDuration();
-
       setDuration(dur);
 
       const end = Math.min(10, dur);
-
       const region = regions.addRegion({
         start: 0,
         end,
-        color: "rgba(34, 197, 94, 0.25)",
+        color: "rgba(0,122,255,0.18)",
         drag: true,
         resize: true,
       });
 
       regionRef.current = region;
-
       setLoopStart(region.start);
       setLoopEnd(region.end);
     });
 
     regions.on("region-updated", (region: any) => {
       regionRef.current = region;
-
       setLoopStart(region.start);
       setLoopEnd(region.end);
     });
@@ -180,7 +123,6 @@ export default function Home() {
       setCurrentTime(time);
 
       const region = regionRef.current;
-
       if (
         region &&
         playModeRef.current === "loop" &&
@@ -192,46 +134,33 @@ export default function Home() {
       }
     });
 
-    ws.on("play", () => setIsPlaying(true));
-    ws.on("pause", () => setIsPlaying(false));
-    ws.on("finish", () => setIsPlaying(false));
-
     return () => ws.destroy();
   }, [audioUrl]);
 
   function formatTime(seconds: number) {
     if (!Number.isFinite(seconds)) return "0:00";
-
     const m = Math.floor(seconds / 60);
     const s = Math.floor(seconds % 60);
-
     return `${m}:${s.toString().padStart(2, "0")}`;
   }
 
   async function detectBpm(file: File) {
     try {
       setBpm(null);
-      setBpmStatus("Detecting BPM...");
+      setBpmStatus("Detecting...");
 
       const arrayBuffer = await file.arrayBuffer();
-
       const audioContext = new AudioContext();
-
       const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-
       const result = await guess(audioBuffer);
 
-      const detectedBpm = Math.round(result.bpm);
-
-      setBpm(detectedBpm);
+      setBpm(Math.round(result.bpm));
       setBpmStatus("Detected");
 
       await audioContext.close();
-    } catch (error) {
-      console.error(error);
-
+    } catch {
       setBpm(null);
-      setBpmStatus("Could not detect BPM");
+      setBpmStatus("Could not detect");
     }
   }
 
@@ -239,12 +168,9 @@ export default function Home() {
     wsRef.current?.pause();
     wsRef.current?.destroy();
 
-    if (objectUrlRef.current) {
-      URL.revokeObjectURL(objectUrlRef.current);
-    }
+    if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
 
     const url = URL.createObjectURL(file);
-
     objectUrlRef.current = url;
 
     setAudioUrl(url);
@@ -260,24 +186,20 @@ export default function Home() {
 
   function playFull() {
     const ws = wsRef.current;
-
     if (!ws) return;
 
     setPlayMode("full");
     playModeRef.current = "full";
-
     ws.play();
   }
 
   function playLoop() {
     const ws = wsRef.current;
     const region = regionRef.current;
-
     if (!ws || !region) return;
 
     setPlayMode("loop");
     playModeRef.current = "loop";
-
     ws.setTime(region.start);
     ws.play();
   }
@@ -288,14 +210,11 @@ export default function Home() {
 
   function stop() {
     const ws = wsRef.current;
-
     if (!ws) return;
 
     ws.pause();
     ws.setTime(0);
-
     setCurrentTime(0);
-    setIsPlaying(false);
   }
 
   function downloadTxt() {
@@ -304,73 +223,104 @@ export default function Home() {
 Beat: ${fileName}
 BPM: ${bpm || "Unknown"}
 
-Loop: ${loopStart.toFixed(2)}s → ${loopEnd.toFixed(2)}s
+Loop:
+${loopStart.toFixed(2)}s → ${loopEnd.toFixed(2)}s
 
 ${lyrics}`;
 
-    const blob = new Blob([text], {
-      type: "text/plain",
-    });
-
+    const blob = new Blob([text], { type: "text/plain" });
     const url = URL.createObjectURL(blob);
-
     const a = document.createElement("a");
 
     a.href = url;
-    a.download = `${projectName || "lyrics"}.txt`;
-
+    a.download = `${projectName || "project"}.txt`;
     a.click();
 
     URL.revokeObjectURL(url);
   }
 
-  function clearLyrics() {
+  function newProject() {
+    const hasContent =
+      lyrics.trim() !== "" || projectName.trim() !== "Untitled Project";
+
+    if (hasContent) {
+      const shouldDownload = window.confirm(
+        "Download current project before starting a new one?"
+      );
+
+      if (shouldDownload) downloadTxt();
+    }
+
     pause();
 
+    setProjectName("Untitled Project");
     setLyrics("");
-    setProjectName("Untitled Rap");
+    setFileName("No beat selected");
+    setAudioUrl(null);
+    setBpm(null);
+    setBpmStatus("No BPM");
+    setCurrentTime(0);
+    setDuration(0);
+    setLoopStart(0);
+    setLoopEnd(10);
+    setPlayMode("full");
+
+    wsRef.current?.destroy();
+    regionRef.current = null;
+
+    localStorage.removeItem("rap-loop-lyrics");
+    localStorage.removeItem("rap-loop-project-name");
   }
 
   return (
-    <main className="min-h-screen bg-[#070707] text-white">
-      <div className="mx-auto max-w-[1800px] p-5">
-        <header className="mb-5 flex items-center justify-between gap-4">
+    <main className="min-h-screen bg-[#f5f5f7] text-[#1d1d1f]">
+      <div className="mx-auto max-w-[1500px] px-6 py-8">
+        <header className="mb-10 flex items-center justify-between gap-6">
           <input
             value={projectName}
             onChange={(e) => setProjectName(e.target.value)}
-            className="w-full bg-transparent text-5xl font-black outline-none"
+            className="w-full bg-transparent text-6xl font-semibold tracking-tight outline-none"
           />
 
-          <span className="rounded-full border border-zinc-800 bg-zinc-900 px-4 py-2 text-sm text-zinc-400">
-            {saved}
-          </span>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={newProject}
+              className="rounded-full bg-white px-5 py-2 text-sm font-semibold text-[#1d1d1f] shadow-sm hover:bg-zinc-100"
+            >
+              New Project
+            </button>
+
+            <span className="rounded-full bg-white px-5 py-2 text-sm text-zinc-500 shadow-sm">
+              {saved}
+            </span>
+          </div>
         </header>
 
-        <div className="mb-5 rounded-3xl border border-zinc-800 bg-zinc-950 p-6">
-          <p className="mb-2 text-xs uppercase tracking-[0.3em] text-zinc-500">
-            Oblique Strategy
+        <section className="mb-6 rounded-[2rem] bg-white p-8 shadow-sm">
+          <p className="mb-2 text-xs font-semibold uppercase tracking-[0.3em] text-zinc-400">
+            Creative prompt
           </p>
 
-          <p className="text-2xl font-bold italic text-green-400">
-            "{quote}"
+          <p className="text-3xl font-semibold tracking-tight text-[#1d1d1f]">
+            “{quote}”
           </p>
-        </div>
+        </section>
 
-        <section className="mb-5 rounded-3xl border border-zinc-800 bg-zinc-950 p-5">
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <section className="mb-6 rounded-[2rem] bg-white p-8 shadow-sm">
+          <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
             <div>
-              <p className="text-sm uppercase tracking-[0.25em] text-green-400">
+              <p className="text-sm font-semibold uppercase tracking-[0.25em] text-zinc-400">
                 Beat Player
               </p>
 
-              <p className="mt-1 max-w-4xl truncate text-zinc-400">
+              <p className="mt-2 max-w-4xl truncate text-zinc-500">
                 {fileName}
               </p>
             </div>
 
             <button
               onClick={() => fileInputRef.current?.click()}
-              className="rounded-2xl bg-white px-5 py-3 font-black text-black hover:bg-zinc-200"
+              className="rounded-full bg-[#1d1d1f] px-6 py-3 font-semibold text-white transition hover:bg-black"
             >
               Choose / Replace Beat
             </button>
@@ -382,27 +332,64 @@ ${lyrics}`;
               className="hidden"
               onChange={(e) => {
                 const file = e.target.files?.[0];
-
                 if (file) chooseFile(file);
-
                 e.target.value = "";
               }}
             />
           </div>
 
-          <div className="rounded-2xl border border-zinc-800 bg-black p-4 overflow-x-auto">
-            <div ref={waveformRef} className="min-h-[230px]" />
+          <div className="rounded-[1.5rem] border border-zinc-200 bg-[#fbfbfd] p-5">
+            <div ref={waveformRef} className="min-h-[230px] overflow-x-auto" />
           </div>
 
-          <div className="mt-4 rounded-2xl bg-black px-5 py-4">
-            <div className="mb-2 flex items-center justify-between">
-              <span className="text-sm text-zinc-400">
-                Zoom waveform
-              </span>
+          <div className="mt-5 grid gap-4 lg:grid-cols-[auto_auto_auto_auto_1fr_auto_auto] lg:items-center">
+            <button
+              onClick={playFull}
+              className="rounded-full bg-[#1d1d1f] px-6 py-4 font-semibold text-white"
+            >
+              ▶ Full
+            </button>
 
-              <span className="font-mono text-sm text-zinc-500">
-                {zoom}
-              </span>
+            <button
+              onClick={playLoop}
+              className="rounded-full bg-[#007aff] px-6 py-4 font-semibold text-white"
+            >
+              ↻ Loop
+            </button>
+
+            <button
+              onClick={pause}
+              className="rounded-full bg-zinc-100 px-6 py-4 font-semibold"
+            >
+              Pause
+            </button>
+
+            <button
+              onClick={stop}
+              className="rounded-full bg-zinc-100 px-6 py-4 font-semibold"
+            >
+              Stop
+            </button>
+
+            <div className="rounded-full bg-[#f5f5f7] px-6 py-4 text-center font-mono text-lg">
+              {formatTime(currentTime)} / {formatTime(duration)}
+            </div>
+
+            <div className="rounded-full bg-[#f5f5f7] px-6 py-4 text-sm text-zinc-500">
+              {playMode} · {loopStart.toFixed(2)}s → {loopEnd.toFixed(2)}s
+            </div>
+
+            <div className="rounded-full bg-[#f5f5f7] px-6 py-4 text-sm text-zinc-500">
+              BPM{" "}
+              <span className="font-semibold text-[#1d1d1f]">{bpm || "--"}</span>
+              <span className="ml-2 text-xs">{bpmStatus}</span>
+            </div>
+          </div>
+
+          <div className="mt-6 rounded-[1.5rem] bg-[#f5f5f7] px-6 py-5">
+            <div className="mb-2 flex justify-between text-sm text-zinc-500">
+              <span>Waveform zoom</span>
+              <span>{zoom}</span>
             </div>
 
             <input
@@ -414,92 +401,28 @@ ${lyrics}`;
               className="w-full"
             />
           </div>
-
-          <div className="mt-4 grid gap-3 lg:grid-cols-[auto_auto_auto_auto_1fr_auto_auto] lg:items-center">
-            <button
-              onClick={playFull}
-              className="rounded-2xl bg-white px-6 py-4 font-black text-black hover:bg-zinc-200"
-            >
-              ▶ Full
-            </button>
-
-            <button
-              onClick={playLoop}
-              className="rounded-2xl bg-green-500 px-6 py-4 font-black text-black hover:bg-green-400"
-            >
-              🔁 Loop
-            </button>
-
-            <button
-              onClick={pause}
-              className="rounded-2xl bg-zinc-800 px-6 py-4 font-black hover:bg-zinc-700"
-            >
-              Pause
-            </button>
-
-            <button
-              onClick={stop}
-              className="rounded-2xl bg-zinc-800 px-6 py-4 font-black hover:bg-zinc-700"
-            >
-              Stop
-            </button>
-
-            <div className="rounded-2xl bg-black px-5 py-4 text-center font-mono text-xl">
-              {formatTime(currentTime)} / {formatTime(duration)}
-            </div>
-
-            <div className="rounded-2xl bg-black px-5 py-4 text-sm text-zinc-400">
-              <span className="text-white">
-                {playMode === "loop" ? "Loop" : "Full"}
-              </span>{" "}
-              · {loopStart.toFixed(2)}s → {loopEnd.toFixed(2)}s
-            </div>
-
-            <div className="rounded-2xl bg-black px-5 py-4 text-sm text-zinc-400">
-              BPM:{" "}
-              <span className="text-xl font-black text-green-400">
-                {bpm || "--"}
-              </span>
-
-              <div className="text-xs text-zinc-500">
-                {bpmStatus}
-              </div>
-            </div>
-          </div>
         </section>
 
-        <section className="rounded-3xl border border-zinc-800 bg-zinc-950 p-5">
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <section className="rounded-[2rem] bg-white p-8 shadow-sm">
+          <div className="mb-5 flex items-center justify-between gap-4">
             <div>
-              <h2 className="text-2xl font-black">Lyrics</h2>
-
-              <p className="text-sm text-zinc-500">
-                Autosave локально в браузері
-              </p>
+              <h2 className="text-3xl font-semibold tracking-tight">Lyrics</h2>
+              <p className="text-zinc-500">Autosave locally in your browser.</p>
             </div>
 
-            <div className="flex gap-3">
-              <button
-                onClick={downloadTxt}
-                className="rounded-xl bg-blue-500 px-4 py-3 font-bold hover:bg-blue-400"
-              >
-                Download .txt
-              </button>
-
-              <button
-                onClick={clearLyrics}
-                className="rounded-xl bg-red-500 px-4 py-3 font-bold hover:bg-red-400"
-              >
-                Clear
-              </button>
-            </div>
+            <button
+              onClick={downloadTxt}
+              className="rounded-full bg-[#007aff] px-6 py-3 font-semibold text-white"
+            >
+              Download .txt
+            </button>
           </div>
 
           <textarea
             value={lyrics}
             onChange={(e) => setLyrics(e.target.value)}
-            placeholder="Пиши реп тут..."
-            className="h-[520px] w-full resize-none rounded-2xl border border-zinc-800 bg-black p-6 text-xl leading-relaxed text-white outline-none placeholder:text-zinc-700"
+            placeholder="Write your verse..."
+            className="h-[560px] w-full resize-none rounded-[1.5rem] border border-zinc-200 bg-[#fbfbfd] p-6 text-2xl leading-relaxed outline-none placeholder:text-zinc-400"
           />
         </section>
       </div>
