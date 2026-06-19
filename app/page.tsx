@@ -87,6 +87,7 @@ export default function Home() {
   const selectionRef = useRef({ start: 0, end: 0 });
   const bpmRef = useRef<number | null>(null);
   const gridDivisionRef = useRef<GridDivision>("1/4");
+  const gridSnapEnabledRef = useRef(true);
 
   const [theme, setTheme] = useState<ThemeMode>("light");
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
@@ -114,6 +115,7 @@ export default function Home() {
   const [lyricsFont, setLyricsFont] = useState<LyricsFont>("system");
   const [lyricsFontSize, setLyricsFontSize] = useState(28);
   const [gridDivision, setGridDivision] = useState<GridDivision>("1/4");
+  const [gridSnapEnabled, setGridSnapEnabled] = useState(true);
 
   const [rhymeWord, setRhymeWord] = useState("");
   const [rhymes, setRhymes] = useState<string[]>([]);
@@ -239,6 +241,10 @@ export default function Home() {
   }, [gridDivision]);
 
   useEffect(() => {
+    gridSnapEnabledRef.current = gridSnapEnabled;
+  }, [gridSnapEnabled]);
+
+  useEffect(() => {
     if (!waveformRef.current || !audioUrl) return;
 
     wsRef.current?.destroy();
@@ -283,8 +289,9 @@ export default function Home() {
     regions.on("region-updated", (region: any) => {
       const activeBpm = bpmRef.current;
       const activeGridDivision = gridDivisionRef.current;
+      const shouldSnapToGrid = gridSnapEnabledRef.current;
 
-      if (activeBpm && typeof region.setOptions === "function") {
+      if (shouldSnapToGrid && activeBpm && typeof region.setOptions === "function") {
         const gridSeconds = 60 / activeBpm / gridDivisionStepsPerBeat[activeGridDivision];
         const snappedStart = snapTimeToBeatGrid(
           region.start,
@@ -1410,14 +1417,35 @@ ${lyrics}`;
                 <div
                   className={`rounded-full px-4 py-2 text-xs font-bold ${
                     bpm
-                      ? "bg-[#007aff]/10 text-[#007aff]"
+                      ? gridSnapEnabled
+                        ? "bg-[#007aff]/10 text-[#007aff]"
+                        : isDark
+                          ? "bg-white/10 text-zinc-300"
+                          : "bg-[#f5f5f7] text-zinc-500"
                       : isDark
                         ? "bg-white/10 text-zinc-400"
                         : "bg-[#f5f5f7] text-zinc-500"
                   }`}
                 >
-                  {bpm ? `Grid ${gridDivision} snap` : "Grid waits for BPM"}
+                  {bpm
+                    ? gridSnapEnabled
+                      ? `Grid ${gridDivision} snap`
+                      : `Grid ${gridDivision}`
+                    : "Grid waits for BPM"}
                 </div>
+
+                <button
+                  onClick={() => setGridSnapEnabled((prev) => !prev)}
+                  className={`rounded-full px-4 py-2 text-xs font-bold transition ${
+                    gridSnapEnabled
+                      ? "bg-[#007aff] text-white"
+                      : isDark
+                        ? "bg-white/10 text-zinc-300"
+                        : "bg-[#f5f5f7] text-zinc-500"
+                  }`}
+                >
+                  {gridSnapEnabled ? "Magnet On" : "Magnet Off"}
+                </button>
 
                 <div className={`flex rounded-full p-1 ${isDark ? "bg-white/10" : "bg-[#f5f5f7]"}`}>
                   {(["1/4", "1/8", "1/16"] as GridDivision[]).map((division) => (
